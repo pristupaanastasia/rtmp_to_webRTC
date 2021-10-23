@@ -1,0 +1,1 @@
+ffmpeg -f flv -listen 1 -i rtmp://localhost:1935/live/app -c copy rtsp://localhost:8554/mystream"
