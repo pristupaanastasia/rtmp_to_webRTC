@@ -148,7 +148,7 @@ func writeVideoToTrack(t *webrtc.TrackLocalStaticRTP) {
 		}
 		if n, err = t.Write(inboundRTPPacket[:n]); err != nil {
 			fmt.Printf("Finish writing video track: %s ", err, n)
-			return
+			continue
 		}
 
 	}
