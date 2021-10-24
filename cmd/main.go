@@ -7,9 +7,7 @@ import (
 	_ "github.com/nareix/joy4"
 	"github.com/nareix/joy4/av/pubsub"
 	"github.com/nareix/joy4/format"
-	"github.com/pion/randutil"
 	_ "github.com/pion/rtcp"
-	"github.com/pion/webrtc/pkg/media"
 	"log"
 	"net"
 
@@ -93,12 +91,7 @@ func createPeerConnection(w http.ResponseWriter, r *http.Request) {
 
 // Add a single video track
 func addVideo(w http.ResponseWriter, r *http.Request) {
-	videoTrack, err := webrtc.NewTrackLocalStaticSample(
-
-		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8},
-		fmt.Sprintf("video-%d", randutil.NewMathRandomGenerator().Uint32()),
-		fmt.Sprintf("video-%d", randutil.NewMathRandomGenerator().Uint32()),
-	)
+	videoTrack, err := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "video", "pion")
 
 	if err != nil {
 		panic(err)
@@ -122,9 +115,9 @@ func addVideo(w http.ResponseWriter, r *http.Request) {
 			log.Println(n, err)
 		}
 	}()
-
-	go writeVideoToTrack(videoTrack, r.URL.Path)
 	doSignaling(w, r)
+	go writeVideoToTrack(videoTrack)
+
 	fmt.Println("Video track has been added")
 }
 
@@ -139,10 +132,11 @@ func removeVideo(w http.ResponseWriter, r *http.Request) {
 	doSignaling(w, r)
 	fmt.Println("Video track has been removed")
 }
-func writeVideoToTrack(t *webrtc.TrackLocalStaticSample, url string) {
+func writeVideoToTrack(t *webrtc.TrackLocalStaticRTP) {
 
 	inboundRTPPacket := make([]byte, 1600) // UDP MTU
-	for {
+	ticker := time.NewTicker(time.Millisecond * 30)
+	for ; true; <-ticker.C {
 		if listener == nil {
 			log.Println("listener is null")
 		}
@@ -152,8 +146,8 @@ func writeVideoToTrack(t *webrtc.TrackLocalStaticSample, url string) {
 		if err != nil {
 			panic(fmt.Sprintf("error during read: %s", err))
 		}
-		if err := t.WriteSample(media.Sample{Data: inboundRTPPacket[:n], Duration: time.Second}); err != nil {
-			fmt.Printf("Finish writing video track: %s ", err)
+		if n, err = t.Write(inboundRTPPacket[:n]); err != nil {
+			fmt.Printf("Finish writing video track: %s ", err, n)
 			return
 		}
 
