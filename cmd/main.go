@@ -3,26 +3,27 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	_ "github.com/aler9/gortsplib/pkg/headers"
 	_ "github.com/nareix/joy4"
-	"github.com/nareix/joy4/av/avutil"
 	"github.com/nareix/joy4/av/pubsub"
 	"github.com/nareix/joy4/format"
-	"github.com/nareix/joy4/format/rtmp"
 	"github.com/pion/randutil"
+	_ "github.com/pion/rtcp"
 	"github.com/pion/webrtc/pkg/media"
 	"log"
+	"net"
+
 	"time"
 
 	"github.com/pion/webrtc"
 	"net/http"
 )
 
+var rtpRemote *webrtc.RTPSender
+var listener *net.UDPConn
+
 func init() {
 	format.RegisterAll()
-}
-
-func IndexHandler(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, "../view/index.html")
 }
 
 var peerConnection *webrtc.PeerConnection //nolint
@@ -32,6 +33,15 @@ type Channel struct {
 }
 
 var channels = map[string]*Channel{}
+
+// This example shows how to
+// 1. create a RTSP server which accepts plain connections
+// 2. allow a single client to publish a stream with TCP or UDP
+// 3. allow multiple clients to read that stream with TCP or UDP
+
+func IndexHandler(w http.ResponseWriter, r *http.Request) {
+	http.ServeFile(w, r, "../view/index.html")
+}
 
 // doSignaling exchanges all state of the local PeerConnection and is called
 // every time a video is added or removed
@@ -104,14 +114,17 @@ func addVideo(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		rtcpBuf := make([]byte, 1500)
 		for {
-			if _, _, rtcpErr := rtpSender.Read(rtcpBuf); rtcpErr != nil {
+			n, _, rtcpErr := rtpSender.Read(rtcpBuf)
+			if rtcpErr != nil {
+				log.Println(n, err)
 				return
 			}
+			log.Println(n, err)
 		}
 	}()
 
 	go writeVideoToTrack(videoTrack, r.URL.Path)
-	//doSignaling(w, r)
+	doSignaling(w, r)
 	fmt.Println("Video track has been added")
 }
 
@@ -127,34 +140,25 @@ func removeVideo(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Video track has been removed")
 }
 func writeVideoToTrack(t *webrtc.TrackLocalStaticSample, url string) {
-	// Open a IVF file and start reading using our IVFReader
-	ch := channels[url]
 
-	if ch == nil {
-		log.Println("error ch == nil")
-		return
-	}
-	cursor := ch.que.Latest()
-
-	// Send our video file frame at a time. Pace our sending so we send it at the same speed it should be played back as.
-	// This isn't required since the video is timestamped, but we will such much higher loss if we send all at once.
-	//
-	// It is important to use a time.Ticker instead of time.Sleep because
-	// * avoids accumulating skew, just calling time.Sleep didn't compensate for the time spent parsing the data
-	// * works around latency issues with Sleep (see https://github.com/golang/go/issues/44343)
-
+	inboundRTPPacket := make([]byte, 1600) // UDP MTU
 	for {
-		pkt, err := cursor.ReadPacket()
+		if listener == nil {
+			log.Println("listener is null")
+		}
+		n, adr, err := listener.ReadFrom(inboundRTPPacket)
+		log.Println(n, adr.String(), adr.Network(), err)
+
 		if err != nil {
+			panic(fmt.Sprintf("error during read: %s", err))
+		}
+		if err := t.WriteSample(media.Sample{Data: inboundRTPPacket[:n], Duration: time.Second}); err != nil {
 			fmt.Printf("Finish writing video track: %s ", err)
 			return
 		}
 
-		if err = t.WriteSample(media.Sample{Data: pkt.Data, Duration: time.Second}); err != nil {
-			fmt.Printf("Finish writing video track: %s ", err)
-			return
-		}
 	}
+
 }
 func main() {
 
@@ -181,40 +185,7 @@ func main() {
 
 		}
 	})
-	server := &rtmp.Server{}
 
-	server.HandlePlay = func(conn *rtmp.Conn) {
-
-		ch := channels[conn.URL.Path]
-
-		if ch != nil {
-			cursor := ch.que.Latest()
-			avutil.CopyFile(conn, cursor)
-		}
-	}
-	server.HandlePublish = func(conn *rtmp.Conn) {
-		streams, _ := conn.Streams()
-
-		ch := channels[conn.URL.Path]
-		if ch == nil {
-			ch = &Channel{}
-			ch.que = pubsub.NewQueue()
-			ch.que.WriteHeader(streams)
-			channels[conn.URL.Path] = ch
-		} else {
-			ch = nil
-		}
-
-		if ch == nil {
-			return
-		}
-
-		avutil.CopyPackets(ch.que, conn)
-
-		delete(channels, conn.URL.Path)
-
-		ch.que.Close()
-	}
 	http.HandleFunc("/", IndexHandler)
 
 	http.HandleFunc("/createPeerConnection", createPeerConnection)
@@ -227,6 +198,18 @@ func main() {
 		panic(http.ListenAndServe(":8080", nil))
 	}()
 
-	server.ListenAndServe()
+	// Open a UDP Listener for RTP Packets on port 5004
+	listener, err = net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("localhost"), Port: 5004})
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		if err = listener.Close(); err != nil {
+			panic(err)
+		}
+	}()
 
+	for {
+
+	}
 }
