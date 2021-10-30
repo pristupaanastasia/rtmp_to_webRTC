@@ -1,0 +1,1 @@
+ffmpeg -f flv -listen 1 -i rtmp://localhost:1935/live/app -vcodec libx264 -an  -f rtp rtp://127.0.0.1:5004?pkt_size=1200 -acodec libopus -vn -f rtp rtp://127.0.0.1:5005

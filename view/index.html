@@ -65,11 +65,13 @@
     window.addVideo = () => {
         if (pc.getTransceivers().length <= activeVideos) {
             pc.addTransceiver('video')
+            pc.addTransceiver('audio')
             activeVideos++
         }
 
         doSignaling('addVideo')
     };
+
 
     window.removeVideo = () => {
         doSignaling('removeVideo')

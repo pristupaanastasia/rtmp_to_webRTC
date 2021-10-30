@@ -11,14 +11,13 @@ import (
 	"log"
 	"net"
 
-	"time"
-
 	"github.com/pion/webrtc"
 	"net/http"
 )
 
 var rtpRemote *webrtc.RTPSender
 var listener *net.UDPConn
+var listeneraudio *net.UDPConn
 
 func init() {
 	format.RegisterAll()
@@ -91,8 +90,8 @@ func createPeerConnection(w http.ResponseWriter, r *http.Request) {
 
 // Add a single video track
 func addVideo(w http.ResponseWriter, r *http.Request) {
-	videoTrack, err := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "video", "pion")
-
+	videoTrack, err := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264}, "video", "pion")
+	audioTrack, err := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "audio", "pion")
 	if err != nil {
 		panic(err)
 	}
@@ -101,11 +100,15 @@ func addVideo(w http.ResponseWriter, r *http.Request) {
 		panic(err)
 	}
 
+	rtpSenderAudio, err := peerConnection.AddTrack(audioTrack)
+	if err != nil {
+		panic(err)
+	}
 	// Read incoming RTCP packets
 	// Before these packets are returned they are processed by interceptors. For things
 	// like NACK this needs to be called.
 	go func() {
-		rtcpBuf := make([]byte, 1500)
+		rtcpBuf := make([]byte, 1600)
 		for {
 			n, _, rtcpErr := rtpSender.Read(rtcpBuf)
 			if rtcpErr != nil {
@@ -115,8 +118,19 @@ func addVideo(w http.ResponseWriter, r *http.Request) {
 			log.Println(n, err)
 		}
 	}()
+	go func() {
+		rtcpBuf := make([]byte, 1600)
+		for {
+			n, _, rtcpErr := rtpSenderAudio.Read(rtcpBuf)
+			if rtcpErr != nil {
+				log.Println(n, err)
+				return
+			}
+			log.Println(n, err)
+		}
+	}()
 	doSignaling(w, r)
-	go writeVideoToTrack(videoTrack)
+	go writeVideoToTrack(videoTrack, audioTrack)
 
 	fmt.Println("Video track has been added")
 }
@@ -132,21 +146,40 @@ func removeVideo(w http.ResponseWriter, r *http.Request) {
 	doSignaling(w, r)
 	fmt.Println("Video track has been removed")
 }
-func writeVideoToTrack(t *webrtc.TrackLocalStaticRTP) {
+func writeVideoToTrack(video *webrtc.TrackLocalStaticRTP, audio *webrtc.TrackLocalStaticRTP) {
 
-	inboundRTPPacket := make([]byte, 1600) // UDP MTU
-	ticker := time.NewTicker(time.Millisecond * 30)
-	for ; true; <-ticker.C {
+	inboundRTPPacket := make([]byte, 1600)      // UDP MTU
+	inboundRTPPacketAudio := make([]byte, 1600) // UDP MTU
+	//ticker := time.NewTicker(time.Millisecond )
+	go func() {
+		for {
+			if listeneraudio == nil {
+				log.Println("listener audio is null")
+			}
+			n, adr, err := listeneraudio.ReadFrom(inboundRTPPacketAudio)
+			log.Println(n, adr.String(), adr.Network(), err, "audio")
+
+			if err != nil {
+				panic(fmt.Sprintf("error during read: %s", err))
+			}
+			if n, err = audio.Write(inboundRTPPacketAudio[:n]); err != nil {
+				fmt.Printf("Finish writing audio track: %s ", err, n)
+				continue
+			}
+
+		}
+	}()
+	for {
 		if listener == nil {
 			log.Println("listener is null")
 		}
 		n, adr, err := listener.ReadFrom(inboundRTPPacket)
-		log.Println(n, adr.String(), adr.Network(), err)
+		log.Println(n, adr.String(), adr.Network(), err, "video")
 
 		if err != nil {
 			panic(fmt.Sprintf("error during read: %s", err))
 		}
-		if n, err = t.Write(inboundRTPPacket[:n]); err != nil {
+		if n, err = video.Write(inboundRTPPacket[:n]); err != nil {
 			fmt.Printf("Finish writing video track: %s ", err, n)
 			continue
 		}
@@ -202,7 +235,15 @@ func main() {
 			panic(err)
 		}
 	}()
-
+	listeneraudio, err = net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("localhost"), Port: 5005})
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		if err = listeneraudio.Close(); err != nil {
+			panic(err)
+		}
+	}()
 	for {
 
 	}
